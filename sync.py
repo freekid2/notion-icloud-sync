@@ -31,14 +31,16 @@ ICLOUD_APPLE_ID = os.environ["ICLOUD_APPLE_ID"]
 ICLOUD_APP_PASSWORD = os.environ["ICLOUD_APP_PASSWORD"]
 
 CALENDAR_NAME = "노션 일정"
-NOTION_API_VERSION = "2022-06-28"
+NOTION_API_VERSION = "2025-09-03"
 DATE_PROPERTY_CANDIDATES = ["시험일시", "날짜", "date"]  # 데이터소스마다 이름이 다를 수 있어 순서대로 시도
 TITLE_PROPERTY_CANDIDATES = ["이름", "Name", "title"]
 
 
 def notion_query_database(database_id):
-    """Notion 데이터베이스의 모든 페이지를 페이지네이션 처리하며 가져온다."""
-    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    """Notion 데이터소스의 모든 페이지를 페이지네이션 처리하며 가져온다.
+    (2025-09-03 API부터 데이터베이스는 여러 데이터소스를 가질 수 있어,
+    /v1/databases/{id}/query 대신 /v1/data_sources/{id}/query 를 사용한다.)"""
+    url = f"https://api.notion.com/v1/data_sources/{database_id}/query"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
         "Notion-Version": NOTION_API_VERSION,
