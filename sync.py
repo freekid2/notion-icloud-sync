@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""
+Notion '캘린더' 데이터베이스 -> iCloud 캘린더 동기화 스크립트
+
+동작 방식:
+  - Notion API로 캘린더 데이터베이스의 모든 행을 읽는다.
+  - 각 행을 iCloud 캘린더(CalDAV)에 UID = "notion-<page_id>@notion-sync" 로 upsert 한다.
+    (같은 UID로 PUT 하면 기존 이벤트를 덮어쓰므로, 여러 번 실행해도 중복 생성되지 않는다.)
+  - "노션 일정"이라는 이름의 전용 캘린더를 자동으로 찾거나 새로 만들어서, 사용자의 기존
+    개인 캘린더를 어지럽히지 않는다.
+
+필요한 환경변수 (GitHub Actions secrets로 주입):
+  NOTION_TOKEN           - Notion internal integration 토큰
+  NOTION_DATABASE_ID     - 동기화할 '캘린더' 데이터소스 ID (collection:// 뒤의 UUID)
+  ICLOUD_APPLE_ID        - iCloud 로그인 이메일
+  ICLOUD_APP_PASSWORD    - appleid.apple.com에서 생성한 앱 암호
+"""
+
+import os
+import sys
+import hashlib
+from datetime import datetime, date, timedelta
+
+import requests
+import caldav
+from icalendar import Calendar as ICalendar, Event as ICalEvent
+
+NOTION_TOKEN = os.environ["NOTION_TOKEN"]
+NOTION_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
+ICLOUD_APPLE_ID = os.environ["ICLOUD_APPLE_ID"]
+ICLOUD_APP_PASSWORD = os.environ["ICLOUD_APP_PASSWORD"]
+
+CALENDAR_NAME = "노션 일정"
+NOTION_API_VERSION = "2022-06-28"
+DATE_PROPERTY_CANDIDATES = ["시험일시", "날짜", "date"]  # 데이터소스마다 이름이 다를 수 있어 순서대로 시도
+TITLE_PROPERTY_CANDIDATES = ["이름", "Name", "title"]
+
+
+def notion_query_database(database_id):
+    """Notion 데이터베이스의 모든 페이지를 페이지네이션 처리하며 가져온다."""
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": NOTION_API_VERSION,
+        "Content-Type": "application/json",
+    }
+    results = []
+    payload = {"page_size": 100}
+    while True:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        results.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        payload["start_cursor"] = data["next_cursor"]
+    return results
+
+
+def extract_title(properties):
+    for key in TITLE_PROPERTY_CANDIDATES:
+        prop = properties.get(key)
+        if prop and prop.get("type") == "title":
+            texts = prop.get("title", [])
+            if texts:
+                return "".join(t.get("plain_text", "") for t in texts)
+    return None
+
+
+def extract_date(properties):
+    for key in DATE_PROPERTY_CANDIDATES:
+        prop = properties.get(key)
+        if prop and prop.get("type") == "date" and prop.get("date"):
+            d = prop["date"]
+            return d.get("start"), d.get("end")
+    return None, None
+
+
+def parse_notion_datetime(value):
+    """Notion의 ISO 날짜/날짜시간 문자열을 datetime 또는 date 객체로 변환."""
+    if value is None:
+        return None
+    if len(value) == 10:  # "YYYY-MM-DD" 형태 -> 종일 이벤트
+        return date.fromisoformat(value)
+    # datetime (타임존 포함)
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def build_ical(uid, title, start, end):
+    cal = ICalendar()
+    cal.add("prodid", "-//notion-icloud-sync//KR")
+    cal.add("version", "2.0")
+
+    event = ICalEvent()
+    event.add("uid", uid)
+    event.add("summary", title)
+    event.add("dtstart", start)
+
+    is_all_day = isinstance(start, date) and not isinstance(start, datetime)
+
+    if end is not None:
+        event.add("dtend", end)
+    elif is_all_day:
+        event.add("dtend", start + timedelta(days=1))
+    else:
+        event.add("dtend", start + timedelta(hours=1))
+
+    event.add("dtstamp", datetime.utcnow())
+    cal.add_component(event)
+    return cal.to_ical().decode("utf-8")
+
+
+def get_or_create_calendar(principal):
+    for cal in principal.calendars():
+        try:
+            if cal.name == CALENDAR_NAME:
+                return cal
+        except Exception:
+            continue
+    return principal.make_calendar(name=CALENDAR_NAME)
+
+
+def main():
+    print("Notion 데이터베이스 조회 중...")
+    pages = notion_query_database(NOTION_DATABASE_ID)
+    print(f"  -> {len(pages)}개 항목 발견")
+
+    print("iCloud CalDAV 연결 중...")
+    client = caldav.DAVClient(
+        url="https://caldav.icloud.com/",
+        username=ICLOUD_APPLE_ID,
+        password=ICLOUD_APP_PASSWORD,
+    )
+    principal = client.principal()
+    calendar = get_or_create_calendar(principal)
+    print(f"  -> 캘린더 '{CALENDAR_NAME}' 준비 완료")
+
+    synced, skipped = 0, 0
+    for page in pages:
+        page_id = page["id"]
+        properties = page.get("properties", {})
+
+        title = extract_title(properties)
+        start_raw, end_raw = extract_date(properties)
+
+        if not title or not start_raw:
+            skipped += 1
+            continue
+
+        start = parse_notion_datetime(start_raw)
+        end = parse_notion_datetime(end_raw) if end_raw else None
+
+        uid = f"notion-{page_id}@notion-sync"
+        ical_text = build_ical(uid, title, start, end)
+
+        try:
+            existing = calendar.event_by_uid(uid)
+            existing.data = ical_text
+            existing.save()
+        except caldav.error.NotFoundError:
+            calendar.save_event(ical_text)
+
+        synced += 1
+
+    print(f"완료: {synced}개 동기화, {skipped}개 건너뜀(제목/날짜 없음)")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:  # noqa: BLE001
+        print(f"오류 발생: {exc}", file=sys.stderr)
+        sys.exit(1)
