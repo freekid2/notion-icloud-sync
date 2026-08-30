@@ -15,7 +15,7 @@
 
 ### 3. 데이터베이스 ID 확인
 캘린더 데이터베이스의 데이터소스 URL에서 `collection://` 뒤의 UUID 부분이 `NOTION_DATABASE_ID`입니다.
-(예: `collection://e88e78e9-0958-82d9-a768-0758b88e035d` → `e88e78e9-0958-82d9-a768-0758b88e035d`)
+(예: `collection://xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` → `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
 
 ### 4. Apple 앱 암호 만들기
 1. https://appleid.apple.com 로그인
