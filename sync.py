@@ -155,12 +155,10 @@ def main():
         uid = f"notion-{page_id}@notion-sync"
         ical_text = build_ical(uid, title, start, end)
 
-        try:
-            existing = calendar.event_by_uid(uid)
-            existing.data = ical_text
-            existing.save()
-        except caldav.error.NotFoundError:
-            calendar.save_event(ical_text)
+        # iCloud는 event_by_uid()가 쓰는 REPORT 기반 UID 조회가 불안정해서
+        # 412 Precondition Failed로 실패하는 경우가 있다. 대신 UID가 이미
+        # 포함된 ical을 add_event로 바로 PUT해서 생성/덮어쓰기(upsert)한다.
+        calendar.add_event(ical_text, no_overwrite=False, no_create=False)
 
         synced += 1
 
