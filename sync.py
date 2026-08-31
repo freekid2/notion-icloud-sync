@@ -32,7 +32,7 @@ ICLOUD_APP_PASSWORD = os.environ["ICLOUD_APP_PASSWORD"]
 
 CALENDAR_NAME = "노션 일정"
 NOTION_API_VERSION = "2025-09-03"
-DATE_PROPERTY_CANDIDATES = ["시험일시", "날짜", "date"]  # 데이터소스마다 이름이 다를 수 있어 순서대로 시도
+DATE_PROPERTY_CANDIDATES = ["과제기한", "시험일시", "날짜", "date"]  # 데이터소스마다 이름이 다를 수 있어 순서대로 시도
 TITLE_PROPERTY_CANDIDATES = ["이름", "Name", "title"]
 
 
