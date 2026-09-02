@@ -122,6 +122,25 @@ def get_or_create_calendar(principal):
     return principal.make_calendar(name=CALENDAR_NAME)
 
 
+def get_existing_notion_events(calendar):
+    """이 스크립트가 동기화한(uid가 notion-<id>@notion-sync 형태인) 기존 iCloud
+    이벤트를 uid -> caldav Event 형태로 모두 가져온다. 삭제된 Notion 페이지에 대응하는
+    이벤트를 정리(clean up)하는 데 사용한다."""
+    existing = {}
+    for event in calendar.events():
+        try:
+            ical = ICalendar.from_ical(event.data)
+        except Exception:
+            continue
+        for component in ical.walk():
+            if component.name != "VEVENT":
+                continue
+            uid = str(component.get("uid", ""))
+            if uid.startswith("notion-") and uid.endswith("@notion-sync"):
+                existing[uid] = event
+    return existing
+
+
 def main():
     print("Notion 데이터베이스 조회 중...")
     pages = notion_query_database(NOTION_DATABASE_ID)
@@ -138,6 +157,7 @@ def main():
     print(f"  -> 캘린더 '{CALENDAR_NAME}' 준비 완료")
 
     synced, skipped = 0, 0
+    valid_uids = set()
     for page in pages:
         page_id = page["id"]
         properties = page.get("properties", {})
@@ -153,6 +173,7 @@ def main():
         end = parse_notion_datetime(end_raw) if end_raw else None
 
         uid = f"notion-{page_id}@notion-sync"
+        valid_uids.add(uid)
         ical_text = build_ical(uid, title, start, end)
 
         # iCloud는 event_by_uid()가 쓰는 REPORT 기반 UID 조회가 불안정해서
@@ -162,7 +183,25 @@ def main():
 
         synced += 1
 
-    print(f"완료: {synced}개 동기화, {skipped}개 건너뜀(제목/날짜 없음)")
+    # Notion에서 삭제되었거나(휴지통 포함), 페이지 재생성 등으로 uid가 바뀐 항목은
+    # notion_query_database()의 결과(pages)에 더는 나타나지 않는다. 이런 "고아"
+    # 이벤트를 iCloud 캘린더에서 찾아 정리해서, 지운 일정이 계속 남아있지 않게 한다.
+    print("삭제된 Notion 항목 정리 중...")
+    existing_notion_events = get_existing_notion_events(calendar)
+    deleted = 0
+    for uid, event in existing_notion_events.items():
+        if uid in valid_uids:
+            continue
+        try:
+            event.delete()
+            deleted += 1
+        except Exception as exc:
+            print(f"  -> {uid} 삭제 실패: {exc}", file=sys.stderr)
+
+    print(
+        f"완료: {synced}개 동기화, {skipped}개 건너뜀(제목/날짜 없음), "
+        f"{deleted}개 삭제(Notion에서 제거된 항목)"
+    )
 
 
 if __name__ == "__main__":
