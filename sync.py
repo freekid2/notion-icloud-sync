@@ -34,6 +34,7 @@ CALENDAR_NAME = "노션 일정"
 NOTION_API_VERSION = "2025-09-03"
 DATE_PROPERTY_CANDIDATES = ["과제기한", "시험일시", "날짜", "date"]  # 데이터소스마다 이름이 다를 수 있어 순서대로 시도
 TITLE_PROPERTY_CANDIDATES = ["이름", "Name", "title"]
+COMPLETED_PROPERTY_CANDIDATES = ["완료", "Done"]
 
 
 def notion_query_database(database_id):
@@ -76,6 +77,17 @@ def extract_date(properties):
             d = prop["date"]
             return d.get("start"), d.get("end")
     return None, None
+
+
+def extract_completed(properties):
+    """'완료' 체크박스가 켜져 있는지 확인한다. Notion 쪽 뷰 필터(완료=FALSE)는
+    화면에만 적용될 뿐 API 조회 결과에는 영향이 없으므로, 완료된 항목을 iCloud에서도
+    치우려면 여기서 직접 걸러줘야 한다."""
+    for key in COMPLETED_PROPERTY_CANDIDATES:
+        prop = properties.get(key)
+        if prop and prop.get("type") == "checkbox":
+            return bool(prop.get("checkbox"))
+    return False
 
 
 def parse_notion_datetime(value):
@@ -156,7 +168,7 @@ def main():
     calendar = get_or_create_calendar(principal)
     print(f"  -> 캘린더 '{CALENDAR_NAME}' 준비 완료")
 
-    synced, skipped = 0, 0
+    synced, skipped, completed = 0, 0, 0
     valid_uids = set()
     for page in pages:
         page_id = page["id"]
@@ -167,6 +179,12 @@ def main():
 
         if not title or not start_raw:
             skipped += 1
+            continue
+
+        if extract_completed(properties):
+            # 완료 체크된 항목은 iCloud에 올리지 않는다. valid_uids에도 넣지 않으므로,
+            # 이미 동기화되어 있던 경우 아래 "삭제된 Notion 항목 정리" 단계에서 지워진다.
+            completed += 1
             continue
 
         start = parse_notion_datetime(start_raw)
@@ -200,7 +218,7 @@ def main():
 
     print(
         f"완료: {synced}개 동기화, {skipped}개 건너뜀(제목/날짜 없음), "
-        f"{deleted}개 삭제(Notion에서 제거된 항목)"
+        f"{completed}개 제외(완료 체크됨), {deleted}개 삭제(Notion에서 제거/완료된 항목)"
     )
 
 
